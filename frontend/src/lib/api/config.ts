@@ -27,6 +27,8 @@ export const API_ENDPOINTS = {
     `/api/v1/users/${userId}/events/workouts/${workoutId}`,
   userAppleXmlImport: (userId: string) =>
     `/api/v1/users/${userId}/import/apple/xml/direct`,
+  userAppleXmlS3Confirm: (userId: string) =>
+    `/api/v1/users/${userId}/import/apple/xml/s3/confirm`,
   userAppleXmlPresignedUrl: (userId: string) =>
     `/api/v1/users/${userId}/import/apple/xml/s3`,
   userInvitationCode: (userId: string) =>

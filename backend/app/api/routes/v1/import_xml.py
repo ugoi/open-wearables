@@ -1,3 +1,4 @@
+from pydantic import BaseModel
 import json
 from json import JSONDecodeError
 
@@ -5,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile, status
 from pydantic import ValidationError
 
 from app.integrations.celery.tasks.process_xml_upload_task import process_xml_upload
+from app.integrations.celery.tasks.process_aws_upload_task import process_aws_upload
 from app.schemas.providers.apple.apple_xml import (
     PresignedURLRequest,
     PresignedURLResponse,
@@ -46,6 +48,31 @@ def import_xml_file(
         "user_id": user_id,
     }
 
+
+
+
+class S3UploadConfirmRequest(BaseModel):
+    file_key: str
+    bucket: str
+
+
+@router.post("/users/{user_id}/import/apple/xml/s3/confirm")
+def confirm_s3_upload(
+    user_id: str,
+    request: S3UploadConfirmRequest,
+    _api_key: ApiKeyDep,
+) -> dict[str, str]:
+    """Confirm S3 upload completed and trigger processing task."""
+    task = process_aws_upload.delay(
+        bucket_name=request.bucket,
+        object_key=request.file_key,
+        user_id=user_id,
+    )
+    return {
+        "status": "processing",
+        "task_id": task.id,
+        "user_id": user_id,
+    }
 
 @router.post("/sns/notification", status_code=status.HTTP_202_ACCEPTED)
 async def receive_sns_notification(

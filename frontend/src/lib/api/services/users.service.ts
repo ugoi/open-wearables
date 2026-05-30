@@ -97,6 +97,8 @@ export const usersService = {
     }
   },
 
+  async confirmS3Upload(userId: string, fileKey: string, bucket: string): Promise<void> {    return apiClient.post<void>(      API_ENDPOINTS.userAppleXmlS3Confirm(userId),      { file_key: fileKey, bucket }    );  },
+
   async generateInvitationCode(userId: string): Promise<InvitationCode> {
     const endpoint = API_ENDPOINTS.userInvitationCode(userId);
     return apiClient.post<InvitationCode>(endpoint, null);

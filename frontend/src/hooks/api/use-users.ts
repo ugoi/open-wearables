@@ -191,6 +191,9 @@ export function useUploadAppleXmlViaS3() {
         file
       );
 
+      // Step 3: Confirm upload and trigger processing
+      await usersService.confirmS3Upload(userId, presignedData.file_key, presignedData.bucket);
+
       return presignedData;
     },
     onSuccess: (_data, { userId }) => {
