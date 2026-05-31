@@ -8,6 +8,7 @@ from app.schemas.providers.apple.apple_xml import (
     PresignedURLRequest,
     PresignedURLResponse,
 )
+from app.config import settings
 from app.services.apple.apple_xml.aws_service import AWS_BUCKET_NAME, get_s3_client
 
 
@@ -75,8 +76,13 @@ class PresignedURLService:
 
             self.log.debug(f"Generated presigned URL: {presigned_post['url']}")
 
+            upload_url = presigned_post["url"]
+            # Replace internal endpoint with public-facing one for browser access
+            if settings.aws_s3_public_endpoint_url and settings.aws_s3_endpoint_url:
+                upload_url = upload_url.replace(settings.aws_s3_endpoint_url, settings.aws_s3_public_endpoint_url)
+
             return PresignedURLResponse(
-                upload_url=presigned_post["url"],
+                upload_url=upload_url,
                 form_fields=presigned_post["fields"],
                 file_key=file_key,
                 expires_in=request.expiration_seconds,

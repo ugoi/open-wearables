@@ -177,6 +177,8 @@ class Settings(BaseSettings):
     aws_region: str = "eu-north-1"
     # for topic ARN verification from SNS notification (signature is verified regardless)
     aws_sns_topic_arn: SecretStr | None = None
+    aws_s3_endpoint_url: str | None = None
+    aws_s3_public_endpoint_url: str | None = None
 
     xml_chunk_size: int = 50_000
 

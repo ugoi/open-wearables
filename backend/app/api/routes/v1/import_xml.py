@@ -1,3 +1,4 @@
+from urllib.parse import unquote
 from pydantic import BaseModel
 import json
 from json import JSONDecodeError
@@ -90,3 +91,39 @@ async def receive_sns_notification(
     if result.status_code not in (status.HTTP_200_OK, status.HTTP_202_ACCEPTED):
         raise HTTPException(status_code=result.status_code, detail=result.response)
     return result
+
+
+@router.post("/minio/webhook", status_code=status.HTTP_202_ACCEPTED)
+async def receive_minio_webhook(request: Request) -> dict[str, str]:
+    """Handle MinIO bucket event notifications (S3-compatible event format)."""
+    body = await request.json()
+    records = body.get("Records", [])
+    dispatched = 0
+
+    for record in records:
+        if record.get("eventSource", "") not in ("aws:s3", "minio:s3"):
+            continue
+        event_name = record.get("eventName", "")
+        if not event_name.startswith("s3:ObjectCreated"):
+            continue
+
+        bucket_name = record["s3"]["bucket"]["name"]
+        object_key = unquote(record["s3"]["object"]["key"])
+
+        # MinIO Key may include bucket prefix, strip it
+        if object_key.startswith(bucket_name + "/"):
+            object_key = object_key[len(bucket_name) + 1:]
+
+        parts = object_key.split("/")
+        user_id = parts[0] if len(parts) >= 3 else None
+        if not user_id:
+            continue
+
+        process_aws_upload.delay(
+            bucket_name=bucket_name,
+            object_key=object_key,
+            user_id=user_id,
+        )
+        dispatched += 1
+
+    return {"status": "ok", "dispatched": str(dispatched)}
