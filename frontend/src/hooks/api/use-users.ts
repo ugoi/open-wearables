@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import { usersService } from '../../lib/api';
 import { queryKeys } from '../../lib/query/keys';
@@ -33,9 +33,7 @@ export function useCreateUser() {
   return useMutation({
     mutationFn: (data: UserCreate) => usersService.create(data),
     onSuccess: () => {
-      // Invalidate users list
       queryClient.invalidateQueries({ queryKey: queryKeys.users.lists() });
-      // Invalidate dashboard stats - only refetches if dashboard is currently open
       queryClient.invalidateQueries({
         queryKey: queryKeys.dashboard.stats(),
         refetchType: 'active',
@@ -57,54 +55,32 @@ export function useUpdateUser() {
     mutationFn: ({ id, data }: { id: string; data: UserUpdate }) =>
       usersService.update(id, data),
     onMutate: async ({ id, data }) => {
-      // Cancel outgoing refetches
       await queryClient.cancelQueries({ queryKey: queryKeys.users.detail(id) });
-
-      // Snapshot previous value
       const previousUser = queryClient.getQueryData<UserRead>(
         queryKeys.users.detail(id)
       );
-
-      // Optimistically update (only apply non-null values to preserve required fields)
       if (previousUser) {
         const optimisticUpdate: UserRead = {
           ...previousUser,
-          first_name:
-            data.first_name !== undefined
-              ? data.first_name
-              : previousUser.first_name,
-          last_name:
-            data.last_name !== undefined
-              ? data.last_name
-              : previousUser.last_name,
+          first_name: data.first_name !== undefined ? data.first_name : previousUser.first_name,
+          last_name: data.last_name !== undefined ? data.last_name : previousUser.last_name,
           email: data.email !== undefined ? data.email : previousUser.email,
-          external_user_id:
-            data.external_user_id ?? previousUser.external_user_id,
+          external_user_id: data.external_user_id ?? previousUser.external_user_id,
         };
-        queryClient.setQueryData<UserRead>(
-          queryKeys.users.detail(id),
-          optimisticUpdate
-        );
+        queryClient.setQueryData<UserRead>(queryKeys.users.detail(id), optimisticUpdate);
       }
-
       return { previousUser };
     },
     onSuccess: (updatedUser, { id }) => {
-      // Update cache with server response
       queryClient.setQueryData(queryKeys.users.detail(id), updatedUser);
       queryClient.invalidateQueries({ queryKey: queryKeys.users.lists() });
       toast.success('User updated successfully');
     },
     onError: (error: unknown, { id }, context) => {
-      // Rollback on error
       if (context?.previousUser) {
-        queryClient.setQueryData(
-          queryKeys.users.detail(id),
-          context.previousUser
-        );
+        queryClient.setQueryData(queryKeys.users.detail(id), context.previousUser);
       }
-      const message =
-        error instanceof Error ? error.message : 'Failed to update user';
+      const message = error instanceof Error ? error.message : 'Failed to update user';
       toast.error(message);
     },
   });
@@ -112,21 +88,15 @@ export function useUpdateUser() {
 
 export function useDeleteUser() {
   const queryClient = useQueryClient();
-
   return useMutation({
     mutationFn: (id: string) => usersService.delete(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.users.lists() });
-      // Invalidate dashboard stats - only refetches if dashboard is currently open
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.dashboard.stats(),
-        refetchType: 'active',
-      });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.stats(), refetchType: 'active' });
       toast.success('User deleted successfully');
     },
     onError: (error: unknown) => {
-      const message =
-        error instanceof Error ? error.message : 'Failed to delete user';
+      const message = error instanceof Error ? error.message : 'Failed to delete user';
       toast.error(message);
     },
   });
@@ -135,14 +105,9 @@ export function useDeleteUser() {
 export function useGenerateInvitationCode() {
   return useMutation({
     mutationFn: (userId: string) => usersService.generateInvitationCode(userId),
-    onSuccess: () => {
-      toast.success('Invitation code generated successfully');
-    },
+    onSuccess: () => { toast.success('Invitation code generated successfully'); },
     onError: (error: unknown) => {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Failed to generate invitation code';
+      const message = error instanceof Error ? error.message : 'Failed to generate invitation code';
       toast.error(message);
     },
   });
@@ -150,70 +115,15 @@ export function useGenerateInvitationCode() {
 
 export function useUploadAppleXml() {
   const queryClient = useQueryClient();
-
   return useMutation({
     mutationFn: ({ userId, file }: { userId: string; file: File }) =>
       usersService.uploadAppleXml(userId, file),
     onSuccess: (_data, { userId }) => {
-      // Invalidate user data to show new imported data
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.users.detail(userId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.health.all,
-        refetchType: 'active',
-      });
-      toast.success('XML file uploaded successfully');
+      queryClient.invalidateQueries({ queryKey: queryKeys.users.detail(userId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.health.all, refetchType: 'active' });
     },
     onError: (error: unknown) => {
-      const message =
-        error instanceof Error ? error.message : 'Failed to upload XML file';
-      toast.error(message);
-    },
-  });
-}
-
-export function useUploadAppleXmlViaS3() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async ({ userId, file }: { userId: string; file: File }) => {
-      // Step 1: Get presigned URL from backend
-      const presignedData = await usersService.getAppleXmlPresignedUrl(userId, {
-        filename: file.name,
-        max_file_size: file.size,
-      });
-
-      // Step 2: Upload directly to S3
-      await usersService.uploadToS3(
-        presignedData.upload_url,
-        presignedData.form_fields,
-        file
-      );
-
-      // Step 3: Confirm upload and trigger processing
-      await usersService.confirmS3Upload(userId, presignedData.file_key, presignedData.bucket);
-
-      return presignedData;
-    },
-    onSuccess: (_data, { userId }) => {
-      // Invalidate user data (processing will happen asynchronously via SQS)
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.users.detail(userId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.health.all,
-        refetchType: 'active',
-      });
-      toast.success(
-        'XML file uploaded to S3 successfully. Processing will begin shortly.'
-      );
-    },
-    onError: (error: unknown) => {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Failed to upload XML file to S3';
+      const message = error instanceof Error ? error.message : 'Failed to upload XML file';
       toast.error(message);
     },
   });
@@ -222,84 +132,125 @@ export function useUploadAppleXmlViaS3() {
 interface UseAppleXmlUploadOptions {
   onSuccess?: (userId: string) => void;
   onError?: (error: Error) => void;
+  onUploadProgress?: (percent: number) => void;
+  onTaskId?: (taskId: string) => void;
 }
 
-/**
- * Custom hook for handling Apple Health XML file uploads
- * Automatically selects between direct upload and S3 based on file size
- * Includes file type and size validation
- */
 export function useAppleXmlUpload(options: UseAppleXmlUploadOptions = {}) {
+  const queryClient = useQueryClient();
   const [uploadingUserId, setUploadingUserId] = useState<string | null>(null);
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
 
   const { mutate: uploadDirect } = useUploadAppleXml();
-  const { mutate: uploadViaS3 } = useUploadAppleXmlViaS3();
 
-  const handleUpload = (
-    userId: string,
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const handleUpload = useCallback(
+    (userId: string, event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      event.target.value = '';
 
-    // Reset the input so the same file can be uploaded again
-    event.target.value = '';
-
-    // Validate file type
-    const isValidExtension = file.name.toLowerCase().endsWith('.xml');
-    const isValidMimeType =
-      file.type === 'text/xml' || file.type === 'application/xml';
-
-    if (!isValidExtension && !isValidMimeType) {
-      toast.error('Invalid file type. Please upload an XML file (.xml)');
-      if (options.onError) {
-        options.onError(new Error('Invalid file type'));
+      const isValidExtension = file.name.toLowerCase().endsWith('.xml');
+      const isValidMimeType = file.type === 'text/xml' || file.type === 'application/xml';
+      if (!isValidExtension && !isValidMimeType) {
+        toast.error('Invalid file type. Please upload an XML file (.xml)');
+        options.onError?.(new Error('Invalid file type'));
+        return;
       }
-      return;
-    }
 
-    // Validate file size
-    if (file.size > MAX_FILE_SIZE) {
-      const maxSizeGB = (MAX_FILE_SIZE / (1024 * 1024 * 1024)).toFixed(0);
-      const fileSizeGB = (file.size / (1024 * 1024 * 1024)).toFixed(2);
-      toast.error(
-        `File is too large (${fileSizeGB}GB). Maximum size is ${maxSizeGB}GB`
-      );
-      if (options.onError) {
-        options.onError(new Error('File size exceeds maximum limit'));
+      if (file.size > MAX_FILE_SIZE) {
+        const maxSizeGB = (MAX_FILE_SIZE / (1024 * 1024 * 1024)).toFixed(0);
+        const fileSizeGB = (file.size / (1024 * 1024 * 1024)).toFixed(2);
+        toast.error(`File is too large (${fileSizeGB}GB). Maximum size is ${maxSizeGB}GB`);
+        options.onError?.(new Error('File size exceeds maximum limit'));
+        return;
       }
-      return;
-    }
 
-    setUploadingUserId(userId);
+      setUploadingUserId(userId);
+      setUploadPercent(0);
 
-    // Choose upload method based on file size
-    const uploadMutation =
-      file.size > S3_UPLOAD_THRESHOLD ? uploadViaS3 : uploadDirect;
+      if (file.size > S3_UPLOAD_THRESHOLD) {
+        // S3/MinIO upload with progress
+        (async () => {
+          try {
+            // Step 1: Get presigned URL
+            const presignedData = await usersService.getAppleXmlPresignedUrl(userId, {
+              filename: file.name,
+              max_file_size: file.size,
+            });
 
-    uploadMutation(
-      { userId, file },
-      {
-        onSuccess: () => {
-          if (options.onSuccess) {
-            options.onSuccess(userId);
+            // Step 2: Upload with XHR progress
+            await new Promise<void>((resolve, reject) => {
+              const formData = new FormData();
+              Object.entries(presignedData.form_fields).forEach(([key, value]) => {
+                formData.append(key, value);
+              });
+              formData.append('file', file);
+
+              const xhr = new XMLHttpRequest();
+              xhr.open('POST', presignedData.upload_url);
+              xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                  const pct = Math.round((e.loaded / e.total) * 100);
+                  setUploadPercent(pct);
+                  options.onUploadProgress?.(pct);
+                }
+              };
+              xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  setUploadPercent(100);
+                  options.onUploadProgress?.(100);
+                  resolve();
+                } else {
+                  reject(new Error(`Upload failed: ${xhr.statusText}`));
+                }
+              };
+              xhr.onerror = () => reject(new Error('Upload failed: network error'));
+              xhr.send(formData);
+            });
+
+            // Step 3: Confirm and get task_id
+            const confirmResult = await usersService.confirmS3Upload(
+              userId,
+              presignedData.file_key,
+              presignedData.bucket
+            );
+            const taskId = (confirmResult as Record<string, string>).task_id;
+            if (taskId) {
+              options.onTaskId?.(taskId);
+            }
+
+            queryClient.invalidateQueries({ queryKey: queryKeys.users.detail(userId) });
+            queryClient.invalidateQueries({ queryKey: queryKeys.health.all, refetchType: 'active' });
+            options.onSuccess?.(userId);
+          } catch (error) {
+            setUploadPercent(null);
+            setUploadingUserId(null);
+            const message = error instanceof Error ? error.message : 'Failed to upload XML file to S3';
+            toast.error(message);
+            options.onError?.(error as Error);
           }
-        },
-        onError: (error) => {
-          if (options.onError) {
-            options.onError(error as Error);
+        })();
+      } else {
+        uploadDirect(
+          { userId, file },
+          {
+            onSuccess: () => options.onSuccess?.(userId),
+            onError: (error) => options.onError?.(error as Error),
+            onSettled: () => {
+              setUploadingUserId(null);
+              setUploadPercent(null);
+            },
           }
-        },
-        onSettled: () => {
-          setUploadingUserId(null);
-        },
+        );
       }
-    );
-  };
+    },
+    [uploadDirect, options, queryClient]
+  );
 
   return {
     handleUpload,
     uploadingUserId,
+    uploadPercent,
     isUploading: (userId: string) => uploadingUserId === userId,
   };
 }

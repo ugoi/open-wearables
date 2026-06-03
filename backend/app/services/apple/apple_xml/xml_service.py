@@ -4,7 +4,7 @@ from logging import Logger
 from pathlib import Path
 from typing import Any, Generator
 from uuid import UUID, uuid4
-from xml.etree import ElementTree as ET
+from lxml import etree
 
 from app.config import settings
 from app.constants.series_types.sdk import SleepPhase, get_series_type_from_metric_type
@@ -267,6 +267,7 @@ class XMLService:
     def _init_metrics(self) -> EventRecordMetrics:
         return {
             "energy_burned": Decimal("0"),
+            "distance": Decimal("0"),
             "heart_rate_min": None,
             "heart_rate_max": None,
             "heart_rate_avg": None,
@@ -301,6 +302,9 @@ class XMLService:
 
         if "energyburned" in lowered and metrics["energy_burned"] is not None:
             metrics["energy_burned"] += self._decimal_from_stat(statistic.get("sum")) or Decimal("0")
+
+        if "distance" in lowered and metrics.get("distance") is not None:
+            metrics["distance"] += self._decimal_from_stat(statistic.get("sum")) or Decimal("0")
 
     def _wrap_sleep_data(self, sleep_records: list[SleepRecord]) -> SyncRequest:
         """Wrap sleep data in a SyncRequest
@@ -347,7 +351,7 @@ class XMLService:
         # Reset stats for this parse run
         self.stats = XMLParseStats()
 
-        for event, elem in ET.iterparse(self.xml_path, events=("end",)):
+        for event, elem in etree.iterparse(str(self.xml_path), events=("end",)):
             if elem.tag == "Record" and event == "end":
                 if len(workouts) + len(time_series_records) + len(sleep_records) >= self.chunk_size:
                     self.log.info(
@@ -367,7 +371,7 @@ class XMLService:
                     sleep_records = []
 
                 try:
-                    record: dict[str, Any] = elem.attrib.copy()
+                    record: dict[str, Any] = dict(elem.attrib)
 
                     # Handle sleep records
                     if record.get("type") == "HKCategoryTypeIdentifierSleepAnalysis":
@@ -390,7 +394,7 @@ class XMLService:
                         self.stats.records.mark_processed()
                 except Exception as e:
                     # Catch any unexpected errors to prevent entire import from failing
-                    metric_type = elem.attrib.get("type", "unknown")
+                    metric_type = elem.get("type", "unknown")
                     self.log.warning(
                         "Unexpected error parsing record of type %s: %s - skipping",
                         metric_type,
@@ -416,19 +420,19 @@ class XMLService:
                     sleep_records = []
 
                 try:
-                    workout_data: dict[str, Any] = elem.attrib.copy()
+                    workout_data: dict[str, Any] = dict(elem.attrib)
                     metrics = self._init_metrics()
                     for stat in elem:
                         if stat.tag != "WorkoutStatistics":
                             continue
-                        statistic = stat.attrib.copy()
+                        statistic = dict(stat.attrib)
                         self._update_metrics_from_stat(metrics, statistic)
                     workout_record, workout_detail = self._create_workout(workout_data, uuid_user, metrics)
                     workouts.append((workout_record, workout_detail))
                     self.stats.workouts.mark_processed()
                 except Exception as e:
                     # Catch any unexpected errors to prevent entire import from failing
-                    workout_type = elem.attrib.get("workoutActivityType", "unknown")
+                    workout_type = elem.get("workoutActivityType", "unknown")
                     self.log.warning(
                         "Unexpected error parsing workout of type %s: %s - skipping",
                         workout_type,

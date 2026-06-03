@@ -24,6 +24,8 @@ import {
   useAppleXmlUpload,
   useGenerateInvitationCode,
 } from '@/hooks/api/use-users';
+import { useImportProgress } from '@/hooks/api/use-import-progress';
+import { ImportProgressBar } from '@/components/user/import-progress-bar';
 import { ROUTES } from '@/lib/constants/routes';
 import { API_CONFIG } from '@/lib/api/config';
 import { copyToClipboard } from '@/lib/utils/clipboard';
@@ -95,7 +97,10 @@ function UserDetailPage() {
   const [scoresDateRange, setScoresDateRange] = useState<DateRangeValue>(30);
 
   const { mutate: deleteUser, isPending: isDeleting } = useDeleteUser();
-  const { handleUpload, isUploading: isUploadingFile } = useAppleXmlUpload();
+  const { handleUpload, isUploading: isUploadingFile, uploadPercent } = useAppleXmlUpload({
+    onUploadProgress: (percent) => setUploadProgress(userId, percent),
+    onTaskId: (taskId) => setTaskId(userId, taskId),
+  });
   const {
     mutate: generateInvitationCode,
     data: invitationCodeData,
@@ -109,6 +114,7 @@ function UserDetailPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isUploading = isUploadingFile(userId);
+  const { progress: importProgress, setUploadProgress, setTaskId } = useImportProgress(userId);
 
   // Tab configuration
   const tabs: TabConfig[] = useMemo(
@@ -373,6 +379,13 @@ function UserDetailPage() {
           </AlertDialog>
         </div>
       </div>
+
+      {/* Import Progress */}
+      <ImportProgressBar
+        progress={importProgress}
+        uploadPercent={uploadPercent}
+        isUploading={isUploading}
+      />
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>

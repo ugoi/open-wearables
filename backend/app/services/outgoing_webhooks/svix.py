@@ -104,8 +104,16 @@ def _build_client() -> Svix | None:
 _client: Svix | None = _build_client()
 
 
+_suppress = False
+
+
+def suppress_webhooks(suppress: bool = True) -> None:
+    global _suppress
+    _suppress = suppress
+
+
 def is_enabled() -> bool:
-    return _client is not None
+    return _client is not None and not _suppress
 
 
 def register_event_types() -> None:
