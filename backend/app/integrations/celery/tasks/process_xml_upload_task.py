@@ -142,6 +142,7 @@ def _import_xml_data(xml_path: str, user_id: str) -> XMLParseStats:
                 created_record = event_record_service.create(workout_db, record)
                 detail_for_record = detail.model_copy(update={"record_id": created_record.id})
                 event_record_service.create_detail(workout_db, detail_for_record)
+                workout_db.commit()
             except Exception as e:
                 log_structured(
                     log,
@@ -174,6 +175,7 @@ def _import_xml_data(xml_path: str, user_id: str) -> XMLParseStats:
             sleep_db = SessionLocal()
             try:
                 handle_sleep_data(sleep_db, sync_request, user_id)
+                sleep_db.commit()
             finally:
                 sleep_db.close()
 

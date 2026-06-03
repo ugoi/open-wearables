@@ -6,6 +6,7 @@ from psycopg.errors import UniqueViolation
 from sqlalchemy import Date, Interval, String, asc, case, cast, func, literal_column, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError as SQLAIntegrityError
+from sqlalchemy.orm import Session
 
 from app.database import DbSession
 from app.models import DataPointSeries, DataSource, DeviceTypePriority, ProviderPriority
@@ -126,24 +127,28 @@ class DataPointSeriesRepository(
 
         return identity_to_source_id
 
+    _STAGING_COLS = (
+        "id", "external_id", "data_source_id", "recorded_at",
+        "zone_offset", "value", "series_type_definition_id",
+    )
+
     def _insert_data_points(
         self,
         db_session: DbSession,
         creators: list[TimeSeriesSampleCreate],
         source_map: dict[DataSourceIdentity, UUID],
     ) -> None:
-        """Batch insert data points.
+        """Bulk-insert data points via COPY into a staging table, then merge.
 
-        Inserts data points in batches to stay within PostgreSQL's parameter limit
-        of 65,535 parameters per query. With 6 fields per record, we batch at ~10k records.
+        Much faster than parameterized INSERT for large batches: COPY uses
+        psycopg3's streaming protocol (no parameter limit), and the merge
+        runs as a single server-side INSERT...SELECT...ON CONFLICT.
         """
-        values_list = []
+        values_list: list[dict] = []
         for creator in creators:
             identity: DataSourceIdentity = (creator.user_id, creator.device_model, creator.source)
             source_id = source_map.get(identity)
-
             if not source_id:
-                # Should not happen if resolve logic is correct, but safe skip
                 continue
 
             values_list.append(
@@ -158,28 +163,55 @@ class DataPointSeriesRepository(
                 }
             )
 
-        if values_list:
-            # Deduplicate within the batch: PostgreSQL cannot upsert the same row
-            # twice in one INSERT. Keep the last value for each conflict key.
-            deduped: dict[tuple, dict] = {}
-            for v in values_list:
-                key = (v["data_source_id"], v["series_type_definition_id"], v["recorded_at"])
-                deduped[key] = v
-            values_list = list(deduped.values())
+        if not values_list:
+            return
 
-            for i in range(0, len(values_list), self.BATCH_INSERT_CHUNK_SIZE):
-                chunk = values_list[i : i + self.BATCH_INSERT_CHUNK_SIZE]
-                stmt = insert(self.model).values(chunk)
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["data_source_id", "series_type_definition_id", "recorded_at"],
-                    set_={
-                        "value": stmt.excluded.value,
-                        "external_id": stmt.excluded.external_id,
-                        "zone_offset": stmt.excluded.zone_offset,
-                    },
-                )
-                db_session.execute(stmt)
-            # NOTE: Caller should commit - allows batching multiple operations
+        # Deduplicate within the batch: PostgreSQL cannot upsert the same row
+        # twice in one INSERT. Keep the last value for each conflict key.
+        deduped: dict[tuple, dict] = {}
+        for v in values_list:
+            key = (v["data_source_id"], v["series_type_definition_id"], v["recorded_at"])
+            deduped[key] = v
+        values_list = list(deduped.values())
+
+        self._copy_via_staging(db_session, values_list)
+
+    def _copy_via_staging(self, db_session: DbSession, rows: list[dict]) -> None:
+        """COPY rows into a temp staging table, then merge into production."""
+        db_session.execute(text("""
+            CREATE TEMP TABLE IF NOT EXISTS _staging_dps (
+                id UUID,
+                external_id VARCHAR(100),
+                data_source_id UUID NOT NULL,
+                recorded_at TIMESTAMPTZ NOT NULL,
+                zone_offset VARCHAR(10),
+                value NUMERIC(10,3) NOT NULL,
+                series_type_definition_id INTEGER NOT NULL
+            )
+        """))
+        db_session.execute(text("TRUNCATE _staging_dps"))
+
+        col_list = ", ".join(self._STAGING_COLS)
+        raw_conn = self._get_raw_connection(db_session)
+        with raw_conn.cursor() as cur:
+            with cur.copy(f"COPY _staging_dps ({col_list}) FROM STDIN") as copy:
+                for row in rows:
+                    copy.write_row(tuple(row[c] for c in self._STAGING_COLS))
+
+        db_session.execute(text(f"""
+            INSERT INTO data_point_series ({col_list})
+            SELECT {col_list} FROM _staging_dps
+            ON CONFLICT (data_source_id, series_type_definition_id, recorded_at)
+            DO UPDATE SET
+                value = EXCLUDED.value,
+                external_id = EXCLUDED.external_id,
+                zone_offset = EXCLUDED.zone_offset
+        """))
+
+    @staticmethod
+    def _get_raw_connection(db_session: Session) -> object:
+        """Extract the underlying psycopg3 connection from a SQLAlchemy session."""
+        return db_session.connection().connection.dbapi_connection
 
     def try_commit(self, db_session: DbSession, creation: DataPointSeries) -> DataPointSeries:
         nested = db_session.begin_nested()

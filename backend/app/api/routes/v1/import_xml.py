@@ -3,7 +3,8 @@ from pydantic import BaseModel
 import json
 from json import JSONDecodeError
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from app.integrations.celery.tasks.process_xml_upload_task import process_xml_upload
@@ -17,8 +18,15 @@ from app.schemas.responses.upload import UploadDataResponse
 from app.services import ApiKeyDep
 from app.services.apple.apple_xml.presigned_url_service import presigned_url_service
 from app.services.apple.apple_xml.sns_service import sns_service
+from app.services.import_progress_service import stream_import_progress, get_active_import
 
 router = APIRouter()
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
 
 
 @router.post("/users/{user_id}/import/apple/xml/s3")
@@ -50,8 +58,6 @@ def import_xml_file(
     }
 
 
-
-
 class S3UploadConfirmRequest(BaseModel):
     file_key: str
     bucket: str
@@ -74,6 +80,43 @@ def confirm_s3_upload(
         "task_id": task.id,
         "user_id": user_id,
     }
+
+
+@router.get("/users/{user_id}/import/progress")
+def get_import_progress(
+    user_id: str,
+    _api_key: ApiKeyDep,
+) -> dict:
+    """Get active import progress for a user."""
+    progress = get_active_import(user_id)
+    if progress is None:
+        return {"active": False}
+    return {"active": True, **progress}
+
+
+@router.get(
+    "/users/{user_id}/import/progress/stream",
+    response_class=StreamingResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "SSE stream of import progress updates.",
+            "content": {"text/event-stream": {}},
+        },
+    },
+)
+def stream_import_progress_sse(
+    user_id: str,
+    _api_key: ApiKeyDep,
+    task_id: str = Query(..., description="Celery task ID to track"),
+) -> StreamingResponse:
+    """Stream import progress via Server-Sent Events."""
+    return StreamingResponse(
+        stream_import_progress(user_id, task_id),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
 
 @router.post("/sns/notification", status_code=status.HTTP_202_ACCEPTED)
 async def receive_sns_notification(
@@ -110,7 +153,6 @@ async def receive_minio_webhook(request: Request) -> dict[str, str]:
         bucket_name = record["s3"]["bucket"]["name"]
         object_key = unquote(record["s3"]["object"]["key"])
 
-        # MinIO Key may include bucket prefix, strip it
         if object_key.startswith(bucket_name + "/"):
             object_key = object_key[len(bucket_name) + 1:]
 
